@@ -108,5 +108,5 @@ Analytics & Insights
 
 ## Author
 
-**Aaryan**  
+**Aaryan Gora**  
 B.Tech Project – Smart Surveillance System
