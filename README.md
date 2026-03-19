@@ -109,4 +109,4 @@ Analytics & Insights
 ## Author
 
 **Aaryan Gora**  
-B.Tech Project – Smart Surveillance System
+B.Tech CSE AIML Project – Smart Surveillance System
