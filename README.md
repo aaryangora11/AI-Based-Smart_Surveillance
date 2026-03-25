@@ -1,4 +1,4 @@
-# Smart AI-Based Surveillance & Crowd Analytics System
+**# Smart AI-Based Surveillance & Crowd Analytics System**
 
 ## Overview
 The **Smart AI-Based Surveillance System** is an AI-powered project designed to analyze surveillance video streams and detect crowd activity in real time.  
