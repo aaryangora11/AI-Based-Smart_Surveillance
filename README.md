@@ -9,7 +9,7 @@ This project aims to enhance modern surveillance systems by integrating **AI-bas
 ---
 
 ## Project Progress
-**Current Status:** ~60% Completed
+**Current Status:** ~80% Completed
 
 ### Completed Work
 - Designed the complete **system architecture** for the surveillance pipeline.
