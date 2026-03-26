@@ -4,7 +4,7 @@ from app.minio_client import upload_fileobj_to_minio
 from sqlalchemy.orm import Session
 from app import database
 
-router = APIRouter(prefix="/upload", tags=["Upload"])
+router = APIRouter(tags=["Upload"])
 
 @router.post("/snapshot")
 def upload_snapshot(file: UploadFile = File(...)):

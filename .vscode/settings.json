@@ -1,0 +1,18 @@
+{
+  "files.exclude": {
+    "**/__pycache__": true,
+    ".venv": true,
+    "venv": true,
+    "node_modules": true,
+    "frontend/node_modules": true,
+    "frontend/dist": true
+  },
+  "search.exclude": {
+    "**/__pycache__": true,
+    ".venv": true,
+    "venv": true,
+    "node_modules": true,
+    "frontend/node_modules": true,
+    "frontend/dist": true
+  }
+}

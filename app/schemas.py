@@ -71,6 +71,7 @@ class EventIn(BaseModel):
     status: Optional[str] = None
     payload: Optional[Any] = None
     snapshot_url: Optional[str] = None
+    snapshot_path: Optional[str] = None
 
 
 
