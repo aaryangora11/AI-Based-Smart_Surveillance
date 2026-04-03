@@ -1,112 +1,255 @@
-**# Smart AI-Based Surveillance & Crowd Analytics System**
+# Smart Surveillance
 
-## Overview
-The **Smart AI-Based Surveillance System** is an AI-powered project designed to analyze surveillance video streams and detect crowd activity in real time.  
-The system uses computer vision and deep learning techniques to identify people in video footage and generate useful analytics such as crowd count and demographic insights.
+AI-based smart surveillance platform with crowd detection, alerting, analytics, snapshots, and a React dashboard.
 
-This project aims to enhance modern surveillance systems by integrating **AI-based detection, backend data processing, and analytics capabilities**.
+## What This Project Does
 
----
+This project combines three parts into one system:
 
-## Project Progress
-**Current Status:** ~80% Completed
+- `Backend`: FastAPI API for auth, sites, alerts, analytics, vision jobs, and media serving
+- `Frontend`: React + Vite dashboard for monitoring, alert review, analytics, and vision processing
+- `AI Pipeline`: YOLOv8 + OpenCV based crowd detection on prerecorded video with polygon-based zone monitoring
 
-### Completed Work
-- Designed the complete **system architecture** for the surveillance pipeline.
-- Developed the **backend infrastructure**, which is almost complete.
-- Implemented an **AI-based crowd detection model using YOLOv8** capable of detecting people in video streams.
-- Integrated **OpenCV** for real-time frame processing.
-- Built an initial **data processing pipeline** to handle detection outputs.
+Main capabilities:
 
-### Work in Progress
-- Fine-tuning the **crowd detection model** for improved accuracy.
-- Integrating **age and gender estimation modules**.
-- Optimizing the system for better **real-time performance (FPS)**.
+- User login and registration
+- Site and camera management
+- Crowd detection on uploaded prerecorded video
+- Polygon zone selection before running detection
+- Live processing preview in the frontend
+- Alert generation when zone limits are reached
+- Alert acknowledgement and alert-history filtering by date
+- Snapshot evidence saving and snapshot gallery view
+- Dashboard and analytics views backed by database data
 
-### Next Steps
-- Complete AI model optimization.
-- Implement demographic analysis (age and gender detection).
-- Develop analytics visualization/dashboard.
-- Perform full system testing and validation.
+## Tech Stack
 
----
+- Backend: FastAPI, SQLAlchemy, PostgreSQL, Uvicorn
+- Frontend: React, TypeScript, Vite, Recharts
+- AI: Ultralytics YOLOv8, OpenCV, NumPy
+- Optional services: Kafka, MinIO, Redis
 
-## System Architecture
+## Project Structure
 
-The project follows a modular pipeline:
-
-```
-Video Input (Camera / Video Feed)
-        │
-        ▼
-Frame Processing (OpenCV)
-        │
-        ▼
-AI Detection Model (YOLOv8)
-        │
-        ▼
-Data Processing Layer
-        │
-        ▼
-Backend Processing
-        │
-        ▼
-Analytics & Insights
+```text
+backend/
+  ai/                  Crowd-detection logic
+  app/                 FastAPI app, routes, models, auth, database
+  frontend/            React + Vite frontend
+  media/               Generated media and local test assets
+  .env.example         Safe environment template
+  requirements.txt     Python dependencies
 ```
 
----
+## Prerequisites
 
-## Technologies Used
+- Python 3.12+ recommended
+- Node.js 20+ recommended
+- PostgreSQL
+- Git
 
-- **Python**
-- **YOLOv8 (Ultralytics)**
-- **OpenCV**
-- **NumPy**
-- **Kafka (Event Streaming / Data Pipeline)**
+Optional:
 
----
+- Docker for running PostgreSQL
+- Kafka if you want event streaming enabled
+- MinIO if you want object storage integration
 
-## Key Features
+## Environment Setup
 
-- Real-time **crowd detection**
-- **Bounding box detection** for people in surveillance footage
-- Backend pipeline for **processing detection data**
-- Scalable architecture for **future analytics modules**
-- Support for additional AI modules like **age and gender detection**
+1. Create a local `.env` file from [.env.example](./.env.example).
+2. Update the values for your machine if needed.
 
----
+Example:
 
-## Applications
+```env
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_USER=smartuser
+DB_PASS=changeme
+DB_NAME=smartdb
+DATABASE_URL=postgresql://smartuser:changeme@127.0.0.1:5432/smartdb
 
-- Smart city surveillance
-- Crowd monitoring in public places
-- Event and stadium monitoring
-- Security and public safety systems
-- Demographic crowd analysis
+JWT_SECRET_KEY=change-me-in-production
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+```
 
----
+## Backend Setup
 
-## Project Flow
+1. Create and activate a virtual environment.
+2. Install Python dependencies.
+3. Start the FastAPI server.
 
-1. Video feed is captured from a camera or video source.
-2. Frames are processed using OpenCV.
-3. YOLOv8 detects people in each frame.
-4. Detection results are processed by the backend pipeline.
-5. Analytics are generated from processed data.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
 
----
+Backend runs at:
 
-## Future Improvements
+- `http://127.0.0.1:8000`
+- Swagger docs: `http://127.0.0.1:8000/docs`
 
-- Real-time **dashboard for analytics**
-- **Age and gender detection**
-- **Edge device deployment**
-- Multi-camera surveillance support
-- Crowd density analysis
+## Frontend Setup
 
----
+From the project root:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend runs at:
+
+- `http://127.0.0.1:5173`
+
+## Database Setup
+
+The app uses PostgreSQL through SQLAlchemy.
+
+If you want to run PostgreSQL in Docker, a typical example is:
+
+```powershell
+docker run --name smart-surveillance-postgres `
+  -e POSTGRES_USER=smartuser `
+  -e POSTGRES_PASSWORD=changeme `
+  -e POSTGRES_DB=smartdb `
+  -p 5432:5432 `
+  -d postgres:15
+```
+
+Make sure your `.env` matches the same credentials.
+
+## AI Model Setup
+
+The crowd-detection pipeline uses YOLOv8. The code supports model selection, but the model weights are not committed to GitHub.
+
+Place your YOLO weights inside:
+
+```text
+ai/models/
+```
+
+Example:
+
+```text
+ai/models/yolov8n.pt
+```
+
+If no model file is present, the AI crowd-detection flow will not be fully usable.
+
+## How To Use The App
+
+1. Start PostgreSQL
+2. Start the backend
+3. Start the frontend
+4. Open the frontend in the browser
+5. Register or log in
+6. Go to `Vision`
+7. Upload a prerecorded video
+8. Draw a polygon over the monitored area
+9. Choose a detection preset
+10. Run crowd detection
+11. Review live output, alerts, snapshots, and final processed media
+
+## Detection Presets
+
+The Vision page includes three preset modes:
+
+- `Fast`: quicker processing, lower workload, less reliable for hard videos
+- `Balanced`: default mode for most videos
+- `Accurate`: slower, but better for difficult or crowded scenes
+
+The backend also performs a basic video-quality assessment and surfaces reliability information in the UI.
+
+## Saved Media
+
+Generated files are stored locally under `media/`.
+
+Common folders:
+
+- `media/alert_snapshots/`
+- `media/processed_videos/`
+- `media/live_previews/`
+- `media/processed_previews/`
+- `media/source_videos/`
+
+These are ignored in git because they are runtime-generated files.
+
+## Optional Services
+
+### Kafka
+
+Kafka is optional in this project.
+
+- If Kafka is not running, the app can still work
+- If Kafka is enabled, the system can publish and consume alert/event messages
+
+### MinIO
+
+MinIO configuration is available in the env file, but local filesystem storage is still used for the current vision/media workflow.
+
+## Useful Commands
+
+Backend syntax check:
+
+```powershell
+python -m py_compile app\auth.py app\routes\alerts.py app\routes\vision.py ai\people_count_alert.py
+```
+
+Frontend lint:
+
+```powershell
+npm --prefix frontend run lint
+```
+
+Frontend production build:
+
+```powershell
+npm --prefix frontend run build
+```
+
+## Current Status
+
+Implemented:
+
+- Backend + frontend integration
+- Auth flow
+- Sites and alerts pages
+- Dashboard and analytics pages
+- Vision processing workflow
+- Snapshot gallery
+- Alert acknowledgement and date-based alert history
+- Live preview updates and processed output review
+
+Still suitable for future improvement:
+
+- AI accuracy tuning on difficult videos
+- stronger deployment packaging
+- automated tests
+- production-grade worker architecture
+- production-grade security hardening
+
+## Notes For GitHub Users
+
+This repository intentionally does not include:
+
+- `.env`
+- `node_modules`
+- Python cache files
+- generated preview media
+- processed videos and snapshots
+- private model weights
+
+If you clone the repo, you must:
+
+- create your own `.env`
+- install dependencies
+- provide database access
+- add YOLO model weights locally
 
 ## Author
 
-**Aaryan Gora**  
-B.Tech CSE AIML Project – AI Based-Smart Surveillance System
+**Aaryan Gora**
