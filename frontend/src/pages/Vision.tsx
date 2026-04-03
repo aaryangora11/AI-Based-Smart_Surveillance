@@ -1,18 +1,20 @@
 import type { MouseEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ProcessedVideo, VisionJob } from '../api';
+import type { ProcessedVideo, VisionJob, VisionModelOption, VisionPresetOption } from '../api';
 import {
   getErrorMessage,
   getLatestProcessedVideo,
   getVisionJob,
+  getVisionOptions,
   startVisionProcessingJob,
 } from '../api';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 const VISION_SESSION_KEY = 'vision-page-state';
 const POLYGON_CLOSE_THRESHOLD = 28;
-const JOB_POLL_MS = 1200;
+const VISION_WS_BASE = `${API_BASE.replace(/^http/, 'ws')}/vision/jobs`;
+const VISION_POLL_MS = 1800;
 
 type Point = {
   x: number;
@@ -25,6 +27,8 @@ type StoredVisionState = {
   cameraId: string;
   confidence: number;
   frameSkip: number;
+  preset: string;
+  modelName: string;
   success: string | null;
   framePreviewUrl: string | null;
   videoDimensions: { width: number; height: number } | null;
@@ -40,6 +44,8 @@ const defaultVisionState: StoredVisionState = {
   cameraId: '7',
   confidence: 0.35,
   frameSkip: 3,
+  preset: 'balanced',
+  modelName: '',
   success: null,
   framePreviewUrl: null,
   videoDimensions: null,
@@ -73,8 +79,12 @@ export default function VisionPage() {
   const [cameraId, setCameraId] = useState(storedState.cameraId);
   const [confidence, setConfidence] = useState(storedState.confidence);
   const [frameSkip, setFrameSkip] = useState(storedState.frameSkip);
+  const [preset, setPreset] = useState(storedState.preset);
+  const [modelName, setModelName] = useState(storedState.modelName);
   const [activeJobId, setActiveJobId] = useState<string | null>(storedState.activeJobId);
   const [activeJob, setActiveJob] = useState<VisionJob | null>(storedState.activeJob);
+  const [modelOptions, setModelOptions] = useState<VisionModelOption[]>([]);
+  const [presetOptions, setPresetOptions] = useState<VisionPresetOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(storedState.activeJob?.status === 'queued' || storedState.activeJob?.status === 'processing');
   const [videoPlaybackError, setVideoPlaybackError] = useState(false);
@@ -97,6 +107,8 @@ export default function VisionPage() {
         cameraId,
         confidence,
         frameSkip,
+        preset,
+        modelName,
         success,
         framePreviewUrl,
         videoDimensions,
@@ -106,7 +118,7 @@ export default function VisionPage() {
         activeJob,
       } satisfies StoredVisionState),
     );
-  }, [video, crowdLimit, cameraId, confidence, frameSkip, success, framePreviewUrl, videoDimensions, draftPoints, polygonPoints, activeJobId, activeJob]);
+  }, [video, crowdLimit, cameraId, confidence, frameSkip, preset, modelName, success, framePreviewUrl, videoDimensions, draftPoints, polygonPoints, activeJobId, activeJob]);
 
   const loadLatestVideo = async () => {
     setLoading(true);
@@ -123,6 +135,21 @@ export default function VisionPage() {
 
   useEffect(() => {
     loadLatestVideo();
+  }, []);
+
+  useEffect(() => {
+    const loadOptions = async () => {
+      try {
+        const data = await getVisionOptions();
+        setModelOptions(data.models);
+        setPresetOptions(data.presets);
+        setModelName((current) => current || data.default_model);
+      } catch {
+        // Keep defaults when options are unavailable.
+      }
+    };
+
+    void loadOptions();
   }, []);
 
   useEffect(() => {
@@ -204,39 +231,95 @@ export default function VisionPage() {
       return undefined;
     }
 
-    let cancelled = false;
-    const pollJob = async () => {
-      try {
-        const job = await getVisionJob(activeJobId);
-        if (cancelled) return;
+    let socket: WebSocket | null = null;
+    let closedByEffect = false;
+    let pollingInterval: number | null = null;
+    let isUsingPolling = false;
 
-        setActiveJob(job);
-        setProcessing(job.status === 'queued' || job.status === 'processing');
+    const applyJobUpdate = (job: VisionJob) => {
+      setActiveJob(job);
+      setProcessing(job.status === 'queued' || job.status === 'processing');
 
-        if (job.status === 'completed') {
-          setVideo(job.video);
-          setSuccess(
-            job.alert_created
-              ? 'Live crowd detection finished and threshold alerts were pushed to the dashboard.'
-              : 'Live crowd detection finished successfully.',
-          );
-        }
+      if (job.status === 'completed') {
+        setVideo(job.video);
+        setSuccess(
+          job.alert_created
+            ? 'Live crowd detection finished and threshold alerts were pushed to the dashboard.'
+            : 'Live crowd detection finished successfully.',
+        );
+      }
 
-        if (job.status === 'failed') {
-          setError(job.error || 'Vision processing failed.');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setError(getErrorMessage(error, 'Failed to fetch live job status'));
-        }
+      if (job.status === 'failed') {
+        setError(job.error || 'Vision processing failed.');
       }
     };
 
-    pollJob();
-    const interval = window.setInterval(pollJob, JOB_POLL_MS);
+    const startPollingFallback = () => {
+      if (isUsingPolling) {
+        return;
+      }
+      isUsingPolling = true;
+
+      const pollJob = async () => {
+        try {
+          const job = await getVisionJob(activeJobId);
+          applyJobUpdate(job);
+
+          if (job.status === 'completed' || job.status === 'failed') {
+            if (pollingInterval !== null) {
+              window.clearInterval(pollingInterval);
+              pollingInterval = null;
+            }
+          }
+        } catch (error) {
+          setError(getErrorMessage(error, 'Failed to fetch live job status'));
+        }
+      };
+
+      void pollJob();
+      pollingInterval = window.setInterval(() => {
+        void pollJob();
+      }, VISION_POLL_MS);
+    };
+
+    const connect = () => {
+      socket = new WebSocket(`${VISION_WS_BASE}/${activeJobId}/stream`);
+
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data) as
+          | { type: 'job_update'; job: VisionJob }
+          | { type: 'job_missing'; job_id: string };
+
+        if (data.type === 'job_missing') {
+          setProcessing(false);
+          setError('The active vision job is no longer available.');
+          return;
+        }
+
+        applyJobUpdate(data.job);
+      };
+
+      socket.onclose = () => {
+        if (closedByEffect || !activeJobId) {
+          return;
+        }
+        startPollingFallback();
+      };
+
+      socket.onerror = () => {
+        socket?.close();
+        startPollingFallback();
+      };
+    };
+
+    connect();
+
     return () => {
-      cancelled = true;
-      window.clearInterval(interval);
+      closedByEffect = true;
+      if (pollingInterval !== null) {
+        window.clearInterval(pollingInterval);
+      }
+      socket?.close();
     };
   }, [activeJobId]);
 
@@ -299,6 +382,16 @@ export default function VisionPage() {
     () => activePolygon.map((point) => `${point.x},${point.y}`).join(' '),
     [activePolygon],
   );
+  const presetSummary = presetOptions.find((item) => item.id === preset);
+  const qualityAssessment = activeJob?.quality_assessment;
+  const issueLabels: Record<string, string> = {
+    low_resolution: 'Low resolution',
+    low_light: 'Low light',
+    dim: 'Dim lighting',
+    blurry: 'Blur detected',
+    high_fps: 'High FPS input',
+    unreadable_video: 'Unreadable video',
+  };
 
   const handleProcess = async () => {
     if (!selectedFile) return;
@@ -314,6 +407,8 @@ export default function VisionPage() {
         cameraId,
         confidence,
         frameSkip,
+        preset,
+        modelName,
         polygons: polygonPoints.length >= 3 ? [polygonPoints.map((point) => [point.x, point.y])] : undefined,
       });
 
@@ -330,6 +425,14 @@ export default function VisionPage() {
         csv_log: null,
         snapshots: [],
         polygons_used: polygonPoints.length >= 3 ? [polygonPoints.map((point) => [point.x, point.y])] : [],
+        quality_assessment: null,
+        processing_profile: {
+          preset,
+          confidence,
+          frame_skip: frameSkip,
+          preprocess_mode: preset === 'fast' ? 'off' : 'auto',
+          model_name: modelName,
+        },
         progress: {
           total_frames: 0,
           processed_frames: 0,
@@ -355,22 +458,55 @@ export default function VisionPage() {
         <div>
           <span className="eyebrow">Vision</span>
           <h2>Crowd detection pipeline</h2>
-          <p>
-            Upload a prerecorded video, draw the monitored polygon, and watch the detector process
-            the video live in the frontend while alerts stream into the dashboard.
-          </p>
+          <p>Upload, mark the zone, watch the run live, and review snapshots and final output in one place.</p>
         </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
       {success && <div className="success-banner">{success}</div>}
+      {qualityAssessment && qualityAssessment.reliability !== 'high' ? (
+        <div className="warning-banner">
+          {qualityAssessment.message}
+          {qualityAssessment.issues.length
+            ? ` Issues: ${qualityAssessment.issues.map((issue) => issueLabels[issue] || issue).join(', ')}.`
+            : ''}
+        </div>
+      ) : null}
+
+      <section className="panel vision-command-panel">
+        <div className="vision-command-grid">
+          <div className="vision-command-copy">
+            <span className="eyebrow">Live workflow</span>
+            <h3>Draw once, monitor the run, and review the output without leaving the page.</h3>
+          </div>
+
+          <div className="vision-command-metrics">
+            <article className="vision-command-chip">
+              <span>Current mode</span>
+              <strong>{activeJob ? 'Live job active' : 'Ready to start'}</strong>
+            </article>
+            <article className="vision-command-chip">
+              <span>Polygon</span>
+              <strong>{polygonPoints.length >= 3 ? 'Locked custom area' : 'Optional region'}</strong>
+            </article>
+            <article className="vision-command-chip">
+              <span>Snapshots</span>
+              <strong>{activeJob?.snapshots.length ?? 0}</strong>
+            </article>
+            <article className="vision-command-chip">
+              <span>Reliability</span>
+              <strong>{qualityAssessment?.reliability ?? 'Pending'}</strong>
+            </article>
+          </div>
+        </div>
+      </section>
 
       <div className="dashboard-grid">
-        <section className="panel">
+        <section className="panel vision-panel-strong">
           <div className="panel-header">
             <div>
               <span className="eyebrow">Run detection</span>
-              <h3>Upload a video and tune the AI pass</h3>
+              <h3>Source and detector settings</h3>
             </div>
           </div>
 
@@ -403,6 +539,28 @@ export default function VisionPage() {
             </label>
 
             <label>
+              Detection preset
+              <select value={preset} onChange={(event) => setPreset(event.target.value)}>
+                {presetOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Model
+              <select value={modelName} onChange={(event) => setModelName(event.target.value)}>
+                {modelOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label} ({option.size_mb} MB)
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
               Confidence
               <input
                 type="number"
@@ -424,14 +582,16 @@ export default function VisionPage() {
               />
             </label>
 
+            {presetSummary ? (
+              <div className="vision-note-card">
+                <strong>{presetSummary.label} preset</strong>
+                <p>{presetSummary.description}</p>
+              </div>
+            ) : null}
+
             <button onClick={handleProcess} disabled={!selectedFile || processing}>
               {processing ? 'Detection running live...' : 'Run crowd detection'}
             </button>
-
-            <p className="muted-text">
-              While this job is running, the live frame panel below will update, and any threshold
-              hit will create dashboard popups immediately.
-            </p>
 
             {selectedFile ? (
               <button type="button" className="button-secondary" onClick={clearSelection}>
@@ -441,7 +601,7 @@ export default function VisionPage() {
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel vision-panel-strong">
           <div className="panel-header">
             <div>
               <span className="eyebrow">Polygon setup</span>
@@ -523,6 +683,10 @@ export default function VisionPage() {
                         : 'Full frame if not completed'}
                   </p>
                 </div>
+                <div className="vision-note-card">
+                  <strong>Model mode</strong>
+                  <p>{modelName || 'Default detector'}</p>
+                </div>
               </div>
             </>
           ) : (
@@ -534,11 +698,11 @@ export default function VisionPage() {
       </div>
 
       <div className="dashboard-grid">
-        <section className="panel">
+        <section className="panel vision-panel-strong">
           <div className="panel-header">
             <div>
               <span className="eyebrow">Live run</span>
-              <h3>Processing stream from the backend</h3>
+              <h3>Processing stream</h3>
             </div>
           </div>
 
@@ -578,7 +742,7 @@ export default function VisionPage() {
           )}
         </section>
 
-        <section className="panel">
+        <section className="panel vision-panel-strong">
           <div className="panel-header">
             <div>
               <span className="eyebrow">Run summary</span>
@@ -604,6 +768,18 @@ export default function VisionPage() {
                 <strong>Polygon mode</strong>
                 <p>{activeJob.polygons_used.length ? 'Custom region used' : 'Full frame used'}</p>
               </div>
+              <div className="vision-note-card">
+                <strong>Reliability score</strong>
+                <p>{qualityAssessment ? `${qualityAssessment.reliability_score}/100` : 'Pending analysis'}</p>
+              </div>
+              <div className="vision-note-card">
+                <strong>Resolved profile</strong>
+                <p>
+                  {activeJob.processing_profile
+                    ? `${activeJob.processing_profile.preset} · ${activeJob.processing_profile.model_name} · skip ${activeJob.processing_profile.frame_skip}`
+                    : 'Pending'}
+                </p>
+              </div>
             </div>
           ) : (
             <div className="empty-state">
@@ -613,7 +789,7 @@ export default function VisionPage() {
         </section>
       </div>
 
-      <section className="panel">
+      <section className="panel vision-panel-strong">
         <div className="panel-header">
           <div>
             <span className="eyebrow">Snapshots</span>
@@ -640,14 +816,12 @@ export default function VisionPage() {
         )}
       </section>
 
-      <section className="panel vision-player-panel">
+      <section className="panel vision-player-panel vision-panel-strong">
         <div className="panel-header">
           <div>
             <span className="eyebrow">Preview</span>
             <h3>Latest processed crowd-detection output</h3>
-            <p>
-              This preview lets you review the final annotated video after the live run is finished.
-            </p>
+            <p>Review the final annotated output once the live run finishes.</p>
           </div>
           <button className="button-secondary" onClick={loadLatestVideo} disabled={loading || processing}>
             {loading ? 'Refreshing...' : 'Refresh'}

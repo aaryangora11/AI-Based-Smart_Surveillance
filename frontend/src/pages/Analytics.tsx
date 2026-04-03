@@ -45,21 +45,63 @@ export default function AnalyticsPage() {
     load();
   }, []);
 
+  const totalEvents = byEvent.reduce((sum, item) => sum + item.value, 0);
+  const dominantEvent = byEvent.reduce<AnalyticsDatum | null>(
+    (current, item) => (!current || item.value > current.value ? item : current),
+    null,
+  );
+  const dominantSeverity = bySeverity.reduce<AnalyticsDatum | null>(
+    (current, item) => (!current || item.value > current.value ? item : current),
+    null,
+  );
+
   return (
     <div className="page-container">
       <div className="page-header">
         <div>
           <span className="eyebrow">Analytics</span>
           <h2>Event intelligence</h2>
-          <p>Understand which incident types dominate and how severity is distributed.</p>
+          <p>Read the signal fast: what is happening most, how severe it is, and where attention is rising.</p>
         </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
 
+      <section className="panel analytics-hero-panel">
+        <div className="analytics-hero-grid">
+          <div className="analytics-hero-copy">
+            <span className="eyebrow">Signal overview</span>
+            <h3>Operational trends at a glance</h3>
+            <p>
+              A cleaner command view for event mix, severity pressure, and the dominant pattern in the system.
+            </p>
+          </div>
+
+          <div className="analytics-kpi-grid">
+            <article className="analytics-kpi-card">
+              <span>Total logged</span>
+              <strong>{totalEvents}</strong>
+            </article>
+            <article className="analytics-kpi-card">
+              <span>Top event</span>
+              <strong>{dominantEvent?.label ?? 'Waiting'}</strong>
+            </article>
+            <article className="analytics-kpi-card">
+              <span>Severity lead</span>
+              <strong>{dominantSeverity?.label ?? 'Waiting'}</strong>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <div className="chart-grid">
-        <div className="chart-card">
-          <h3>Events by type</h3>
+        <div className="chart-card analytics-chart-card">
+          <div className="analytics-card-header">
+            <div>
+              <span className="eyebrow">Event mix</span>
+              <h3>Events by type</h3>
+            </div>
+          </div>
           <div className="chart-wrap">
             {loading ? (
               <div className="empty-state">Loading event distribution...</div>
@@ -79,8 +121,13 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        <div className="chart-card">
-          <h3>Events by severity</h3>
+        <div className="chart-card analytics-chart-card">
+          <div className="analytics-card-header">
+            <div>
+              <span className="eyebrow">Severity split</span>
+              <h3>Events by severity</h3>
+            </div>
+          </div>
           <div className="chart-wrap">
             {loading ? (
               <div className="empty-state">Loading severity distribution...</div>

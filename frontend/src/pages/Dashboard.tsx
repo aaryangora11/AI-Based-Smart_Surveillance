@@ -13,7 +13,6 @@ import {
 
 import type { AlertItem, AnalyticsDatum, DashboardSummary, ProcessedVideo } from '../api';
 import {
-  getAlerts,
   getAnalyticsByEventType,
   getAnalyticsBySeverity,
   getAnalyticsSummary,
@@ -22,13 +21,15 @@ import {
 } from '../api';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-const ALERT_POLL_MS = 3000;
+const ALERTS_WS_URL = `${API_BASE.replace(/^http/, 'ws')}/alerts/stream`;
+const DASHBOARD_POLL_MS = 10000;
 
 type ToastAlert = AlertItem & {
   toastKey: string;
 };
 
 export default function DashboardPage() {
+  const fullName = localStorage.getItem('user_full_name') || 'Operator';
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [byEvent, setByEvent] = useState<AnalyticsDatum[]>([]);
   const [bySeverity, setBySeverity] = useState<AnalyticsDatum[]>([]);
@@ -71,26 +72,61 @@ export default function DashboardPage() {
     }
 
     try {
-      const [summaryData, eventData, severityData, alertsData, latestVideoData] = await Promise.all([
+      const [summaryData, eventData, severityData, latestVideoData] = await Promise.all([
         getAnalyticsSummary(),
         getAnalyticsByEventType(),
         getAnalyticsBySeverity(),
-        getAlerts(4),
         getLatestProcessedVideo(),
       ]);
 
       setSummary(summaryData);
       setByEvent(eventData);
       setBySeverity(severityData);
-      setRecentAlerts(alertsData.alerts || []);
       setVideo(latestVideoData.video);
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to load dashboard'));
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+    }
+  }, []);
 
-      const currentIds = new Set((alertsData.alerts || []).map((alert) => alert.id));
-      if (!hasHydratedAlertsRef.current) {
-        seenAlertIdsRef.current = currentIds;
-        hasHydratedAlertsRef.current = true;
-      } else {
-        const newAlerts = (alertsData.alerts || []).filter((alert) => !seenAlertIdsRef.current.has(alert.id));
+  useEffect(() => {
+    void loadDashboard();
+
+    const interval = window.setInterval(() => {
+      void loadDashboard(true);
+    }, DASHBOARD_POLL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    let socket: WebSocket | null = null;
+    let reconnectTimeout: number | null = null;
+    let closedByEffect = false;
+
+    const connect = () => {
+      socket = new WebSocket(ALERTS_WS_URL);
+
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data) as { type?: string; alerts?: AlertItem[] };
+        if (data.type !== 'alerts_snapshot' || !data.alerts) {
+          return;
+        }
+
+        const alerts = data.alerts;
+        setRecentAlerts(alerts);
+
+        const currentIds = new Set(alerts.map((alert) => alert.id));
+        if (!hasHydratedAlertsRef.current) {
+          seenAlertIdsRef.current = currentIds;
+          hasHydratedAlertsRef.current = true;
+          return;
+        }
+
+        const newAlerts = alerts.filter((alert) => !seenAlertIdsRef.current.has(alert.id));
         if (newAlerts.length > 0) {
           const toastBatch = newAlerts.map((alert) => ({
             ...alert,
@@ -106,26 +142,32 @@ export default function DashboardPage() {
             }, 6500);
           });
         }
+
         seenAlertIdsRef.current = currentIds;
+      };
+
+      socket.onclose = () => {
+        if (closedByEffect) {
+          return;
+        }
+        reconnectTimeout = window.setTimeout(connect, 2000);
+      };
+
+      socket.onerror = () => {
+        socket?.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      closedByEffect = true;
+      if (reconnectTimeout !== null) {
+        window.clearTimeout(reconnectTimeout);
       }
-    } catch (error) {
-      setError(getErrorMessage(error, 'Failed to load dashboard'));
-    } finally {
-      if (!silent) {
-        setLoading(false);
-      }
-    }
+      socket?.close();
+    };
   }, []);
-
-  useEffect(() => {
-    void loadDashboard();
-
-    const interval = window.setInterval(() => {
-      void loadDashboard(true);
-    }, ALERT_POLL_MS);
-
-    return () => window.clearInterval(interval);
-  }, [loadDashboard]);
 
   const severityPeak = Math.max(...bySeverity.map((entry) => entry.value), 1);
   const totalEvents = summary?.totalEvents ?? 0;
@@ -151,6 +193,10 @@ export default function DashboardPage() {
             </p>
           </article>
         ))}
+      </div>
+
+      <div className="dashboard-greeting">
+        <strong>Hello, {fullName}</strong>
       </div>
 
       <div className="page-header dashboard-header-compact">

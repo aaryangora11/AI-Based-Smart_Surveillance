@@ -1,14 +1,16 @@
+import asyncio
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 import cv2
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from sqlalchemy.orm import Session, joinedload
 
-from ai.people_count_alert import process_video
+from ai.people_count_alert import MODEL_DIR, MODEL_PATH, process_video
 from app import database, models
 
 MEDIA_ROOT = Path("media")
@@ -28,6 +30,32 @@ router = APIRouter(tags=["Vision"])
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".avi", ".mkv"}
 PROCESSING_JOBS: dict[str, dict] = {}
 PROCESSING_JOBS_LOCK = threading.Lock()
+JOB_RETENTION = timedelta(hours=6)
+LIVE_PREVIEW_INTERVAL_SECONDS = 0.75
+LIVE_PREVIEW_FILES_TO_KEEP = 6
+PRESET_CONFIGS = {
+    "fast": {
+        "label": "Fast",
+        "description": "Quicker review with fewer processed frames.",
+        "confidence": 0.45,
+        "frame_skip": 4,
+        "preprocess_mode": "off",
+    },
+    "balanced": {
+        "label": "Balanced",
+        "description": "Best general-purpose mode for most test videos.",
+        "confidence": 0.35,
+        "frame_skip": 3,
+        "preprocess_mode": "auto",
+    },
+    "accurate": {
+        "label": "Accurate",
+        "description": "Processes more frames and applies mild cleanup for difficult videos.",
+        "confidence": 0.28,
+        "frame_skip": 1,
+        "preprocess_mode": "auto",
+    },
+}
 
 
 def serialize_video(path: Path):
@@ -50,6 +78,175 @@ def serialize_snapshot(snapshot_path: str | Path):
 def serialize_live_preview(preview_path: Path | None):
     if preview_path and preview_path.exists():
         return f"/media/live_previews/{preview_path.name}"
+    return None
+
+
+def list_available_models():
+    models = []
+    for path in sorted(MODEL_DIR.glob("*.pt")):
+        size_mb = round(path.stat().st_size / 1024 / 1024, 2)
+        models.append(
+            {
+                "id": path.name,
+                "label": path.stem,
+                "size_mb": size_mb,
+                "is_default": path.name == MODEL_PATH.name,
+            }
+        )
+
+    if not models and MODEL_PATH.exists():
+        models.append(
+            {
+                "id": MODEL_PATH.name,
+                "label": MODEL_PATH.stem,
+                "size_mb": round(MODEL_PATH.stat().st_size / 1024 / 1024, 2),
+                "is_default": True,
+            }
+        )
+
+    return models
+
+
+def analyze_video_quality(video_path: Path):
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return {
+            "resolution": None,
+            "fps": None,
+            "duration_seconds": None,
+            "brightness_score": None,
+            "sharpness_score": None,
+            "reliability": "unknown",
+            "reliability_score": 0,
+            "issues": ["unreadable_video"],
+            "message": "The uploaded video could not be analyzed before processing.",
+            "recommended_preset": "accurate",
+        }
+
+    try:
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0)
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        duration_seconds = round(total_frames / fps, 2) if fps > 0 and total_frames > 0 else None
+
+        sample_count = min(10, total_frames) if total_frames > 0 else 10
+        brightness_samples = []
+        sharpness_samples = []
+
+        for index in range(max(sample_count, 1)):
+            if total_frames > 0:
+                frame_index = int((index / max(sample_count - 1, 1)) * max(total_frames - 1, 0))
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                continue
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness_samples.append(float(gray.mean()))
+            sharpness_samples.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+
+        brightness = round(sum(brightness_samples) / len(brightness_samples), 2) if brightness_samples else None
+        sharpness = round(sum(sharpness_samples) / len(sharpness_samples), 2) if sharpness_samples else None
+
+        issues = []
+        if width and height and (width < 960 or height < 540):
+            issues.append("low_resolution")
+        if brightness is not None and brightness < 75:
+            issues.append("low_light")
+        elif brightness is not None and brightness < 105:
+            issues.append("dim")
+        if sharpness is not None and sharpness < 75:
+            issues.append("blurry")
+        if fps and fps > 45:
+            issues.append("high_fps")
+
+        score = 100
+        penalties = {
+            "low_resolution": 24,
+            "low_light": 24,
+            "dim": 10,
+            "blurry": 22,
+            "high_fps": 6,
+            "unreadable_video": 100,
+        }
+        for issue in issues:
+            score -= penalties.get(issue, 0)
+        score = max(5, score)
+
+        if score >= 80:
+            reliability = "high"
+            message = "Input quality looks good for reliable crowd counting."
+            recommended_preset = "balanced"
+        elif score >= 58:
+            reliability = "medium"
+            message = "The video is usable, but conditions may soften detection quality."
+            recommended_preset = "balanced" if "blurry" not in issues else "accurate"
+        else:
+            reliability = "low"
+            message = "This video is challenging. Expect weaker counting and use accurate mode."
+            recommended_preset = "accurate"
+
+        if "high_fps" in issues and recommended_preset == "balanced":
+            recommended_preset = "fast"
+
+        return {
+            "resolution": {"width": width, "height": height},
+            "fps": round(fps, 2) if fps else None,
+            "duration_seconds": duration_seconds,
+            "brightness_score": brightness,
+            "sharpness_score": sharpness,
+            "reliability": reliability,
+            "reliability_score": score,
+            "issues": issues,
+            "message": message,
+            "recommended_preset": recommended_preset,
+        }
+    finally:
+        capture.release()
+
+
+def resolve_processing_profile(preset: str, quality_assessment: dict | None):
+    selected = PRESET_CONFIGS.get(preset, PRESET_CONFIGS["balanced"]).copy()
+    issues = set((quality_assessment or {}).get("issues", []))
+
+    if selected["preprocess_mode"] == "auto" and not issues:
+        selected["preprocess_mode"] = "off"
+
+    if preset == "balanced":
+        if {"low_light", "blurry"} & issues:
+            selected["confidence"] = 0.3
+            selected["frame_skip"] = 2
+            selected["preprocess_mode"] = "auto"
+        if "low_resolution" in issues:
+            selected["confidence"] = 0.26
+            selected["frame_skip"] = 1
+    elif preset == "fast" and "low_resolution" in issues:
+        selected["frame_skip"] = 3
+    elif preset == "accurate":
+        selected["confidence"] = min(selected["confidence"], 0.28)
+        selected["frame_skip"] = 1
+
+    return selected
+
+
+def extract_snapshot_filename(payload: dict | None):
+    if not payload:
+        return None
+
+    snapshot_url = payload.get("snapshot_url")
+    if snapshot_url:
+        return Path(str(snapshot_url)).name
+
+    snapshot_path = payload.get("snapshot_path")
+    if snapshot_path:
+        return Path(str(snapshot_path)).name
+
+    snapshot_urls = payload.get("snapshot_urls") or []
+    if snapshot_urls:
+        return Path(str(snapshot_urls[0])).name
+
     return None
 
 
@@ -264,11 +461,50 @@ def parse_polygons(polygons_json: str | None):
     return polygons
 
 
-def write_live_preview(preview_path: Path, frame):
+def write_live_preview(job_id: str, frame) -> Path:
+    LIVE_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    preview_path = LIVE_PREVIEW_DIR / f"{job_id}_{uuid4().hex[:8]}.jpg"
     cv2.imwrite(str(preview_path), frame)
+    return preview_path
+
+
+def cleanup_job_preview_files(job_id: str, keep_latest: int = 2):
+    preview_files = sorted(
+        LIVE_PREVIEW_DIR.glob(f"{job_id}_*.jpg"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    for stale_file in preview_files[:-keep_latest]:
+        try:
+            stale_file.unlink(missing_ok=True)
+        except PermissionError:
+            continue
+        except OSError:
+            continue
+
+
+def prune_stale_jobs():
+    now = datetime.utcnow()
+    removable: list[str] = []
+
+    with PROCESSING_JOBS_LOCK:
+        for job_id, job in list(PROCESSING_JOBS.items()):
+            finished_at = job.get("finished_at")
+            if not finished_at:
+                continue
+            try:
+                finished_dt = datetime.fromisoformat(finished_at)
+            except ValueError:
+                finished_dt = now
+            if now - finished_dt > JOB_RETENTION:
+                removable.append(job_id)
+                PROCESSING_JOBS.pop(job_id, None)
+
+    for job_id in removable:
+        cleanup_job_preview_files(job_id, keep_latest=0)
 
 
 def update_job(job_id: str, **updates):
+    prune_stale_jobs()
     with PROCESSING_JOBS_LOCK:
         job = PROCESSING_JOBS.get(job_id)
         if not job:
@@ -297,18 +533,37 @@ def run_processing_job(
     confidence: float,
     frame_skip: int,
     polygons,
+    model_name: str,
+    preprocess_mode: str,
+    quality_assessment: dict | None,
+    preset: str,
 ):
-    preview_path = LIVE_PREVIEW_DIR / f"{job_id}.jpg"
     alert_created = False
+    last_preview_push = 0.0
 
     def on_frame(frame, stats):
-        write_live_preview(preview_path, frame)
-        update_job(
-            job_id,
-            status="processing",
-            progress=stats,
-            preview_image_url=serialize_live_preview(preview_path),
+        nonlocal last_preview_push
+        now = monotonic()
+        should_refresh_preview = (
+            stats["processed_frames"] <= 1
+            or now - last_preview_push >= LIVE_PREVIEW_INTERVAL_SECONDS
         )
+
+        updates = {
+            "status": "processing",
+            "progress": stats,
+        }
+
+        if should_refresh_preview:
+            try:
+                preview_path = write_live_preview(job_id, frame)
+                updates["preview_image_url"] = serialize_live_preview(preview_path)
+                cleanup_job_preview_files(job_id, keep_latest=LIVE_PREVIEW_FILES_TO_KEEP)
+                last_preview_push = now
+            except OSError:
+                pass
+
+        update_job(job_id, **updates)
 
     def on_status_change(status_event: dict):
         nonlocal alert_created
@@ -341,6 +596,9 @@ def run_processing_job(
             show_preview=False,
             frame_callback=on_frame,
             status_callback=on_status_change,
+            model_name=model_name,
+            preprocess_mode=preprocess_mode,
+            quality_profile=quality_assessment,
         )
 
         db = database.SessionLocal()
@@ -375,6 +633,13 @@ def run_processing_job(
                 "type": event.event_type,
                 "severity": event.severity,
             },
+            processing_profile={
+                "preset": preset,
+                "confidence": confidence,
+                "frame_skip": frame_skip,
+                "preprocess_mode": preprocess_mode,
+                "model_name": model_name,
+            },
             alert_created=alert_created or alert is not None,
             finished_at=datetime.utcnow().isoformat(),
         )
@@ -387,10 +652,13 @@ def run_processing_job(
             error=f"Vision processing failed: {error}",
             finished_at=datetime.utcnow().isoformat(),
         )
+    finally:
+        source_path.unlink(missing_ok=True)
 
 
 @router.get("/latest")
 def get_latest_processed_video():
+    prune_stale_jobs()
     videos = [path for path in PROCESSED_VIDEO_DIR.iterdir() if path.is_file()]
     if not videos:
         return {"video": None}
@@ -399,13 +667,124 @@ def get_latest_processed_video():
     return {"video": serialize_video(latest_video)}
 
 
+@router.get("/options")
+def get_vision_options():
+    return {
+        "models": list_available_models(),
+        "default_model": MODEL_PATH.name,
+        "presets": [
+            {"id": preset_id, **config}
+            for preset_id, config in PRESET_CONFIGS.items()
+        ],
+    }
+
+
+@router.get("/snapshots")
+def list_saved_snapshots(limit: int = 60, db: Session = Depends(database.get_db)):
+    prune_stale_jobs()
+    snapshot_files = sorted(
+        [path for path in SNAPSHOT_DIR.iterdir() if path.is_file()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[: max(1, min(limit, 200))]
+
+    if not snapshot_files:
+        return {"snapshots": []}
+
+    indexed_events: dict[str, dict] = {}
+    recent_events = (
+        db.query(models.Event)
+        .options(joinedload(models.Event.camera), joinedload(models.Event.alerts))
+        .order_by(models.Event.created_at.desc())
+        .limit(max(limit * 5, 120))
+        .all()
+    )
+
+    for event in recent_events:
+        payload = event.payload or {}
+        filename = extract_snapshot_filename(payload)
+        if not filename or filename in indexed_events:
+            continue
+
+        alert = event.alerts[0] if event.alerts else None
+        indexed_events[filename] = {
+            "camera_name": event.camera.name if event.camera else None,
+            "zone_name": payload.get("area_id") or "A0",
+            "severity": event.severity,
+            "event_type": event.event_type,
+            "message": alert.message if alert else None,
+            "acknowledged": alert.acknowledged if alert else False,
+        }
+
+    snapshots = []
+    for path in snapshot_files:
+        stat = path.stat()
+        event_meta = indexed_events.get(path.name, {})
+        snapshots.append(
+            {
+                "filename": path.name,
+                "url": serialize_snapshot(path),
+                "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "size_bytes": stat.st_size,
+                "camera_name": event_meta.get("camera_name"),
+                "zone_name": event_meta.get("zone_name"),
+                "severity": event_meta.get("severity"),
+                "event_type": event_meta.get("event_type"),
+                "message": event_meta.get("message"),
+                "acknowledged": event_meta.get("acknowledged", False),
+            }
+        )
+
+    return {"snapshots": snapshots}
+
+
 @router.get("/jobs/{job_id}")
 def get_processing_job(job_id: str):
+    prune_stale_jobs()
     with PROCESSING_JOBS_LOCK:
         job = PROCESSING_JOBS.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Processing job not found")
         return dict(job)
+
+
+@router.websocket("/jobs/{job_id}/stream")
+async def stream_processing_job(websocket: WebSocket, job_id: str):
+    await websocket.accept()
+    last_revision = None
+
+    try:
+        while True:
+            prune_stale_jobs()
+            with PROCESSING_JOBS_LOCK:
+                job = PROCESSING_JOBS.get(job_id)
+                snapshot = dict(job) if job else None
+
+            if snapshot is None:
+                await websocket.send_json({"type": "job_missing", "job_id": job_id})
+                return
+
+            revision = (
+                snapshot.get("updated_at"),
+                snapshot.get("status"),
+                snapshot.get("progress", {}).get("processed_frames"),
+                len(snapshot.get("snapshots", [])),
+            )
+            if revision != last_revision:
+                await websocket.send_json(
+                    {
+                        "type": "job_update",
+                        "job": snapshot,
+                    }
+                )
+                last_revision = revision
+
+            if snapshot.get("status") in {"completed", "failed"}:
+                return
+
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        return
 
 
 @router.post("/upload-video")
@@ -435,8 +814,11 @@ async def process_source_video(
     camera_id: str = Form("7"),
     confidence: float = Form(0.35),
     frame_skip: int = Form(3),
+    preset: str = Form("balanced"),
+    model_name: str = Form(MODEL_PATH.name),
     polygons_json: str | None = Form(None),
 ):
+    prune_stale_jobs()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_VIDEO_SUFFIXES:
         raise HTTPException(status_code=400, detail="Unsupported video type. Use mp4, webm, mov, avi, mkv.")
@@ -453,10 +835,15 @@ async def process_source_video(
 
     content = await file.read()
     source_path.write_bytes(content)
+    quality_assessment = analyze_video_quality(source_path)
+    profile = resolve_processing_profile(preset, quality_assessment)
+    resolved_confidence = profile["confidence"]
+    resolved_frame_skip = profile["frame_skip"]
+    preprocess_mode = profile["preprocess_mode"]
+    available_model_ids = {item["id"] for item in list_available_models()}
+    resolved_model_name = model_name if model_name in available_model_ids else MODEL_PATH.name
 
     job_id = uuid4().hex
-    preview_path = LIVE_PREVIEW_DIR / f"{job_id}.jpg"
-
     with PROCESSING_JOBS_LOCK:
         PROCESSING_JOBS[job_id] = {
             "job_id": job_id,
@@ -465,7 +852,15 @@ async def process_source_video(
             "source_filename": file.filename or source_path.name,
             "camera_id": camera_id,
             "crowd_limit": crowd_limit,
-            "preview_image_url": serialize_live_preview(preview_path),
+            "quality_assessment": quality_assessment,
+            "processing_profile": {
+                "preset": preset,
+                "confidence": resolved_confidence,
+                "frame_skip": resolved_frame_skip,
+                "preprocess_mode": preprocess_mode,
+                "model_name": resolved_model_name,
+            },
+            "preview_image_url": None,
             "video": None,
             "csv_log": None,
             "snapshots": [],
@@ -492,9 +887,13 @@ async def process_source_video(
             "source_filename": file.filename or source_path.name,
             "camera_id": camera_id,
             "crowd_limit": crowd_limit,
-            "confidence": confidence,
-            "frame_skip": frame_skip,
+            "confidence": resolved_confidence,
+            "frame_skip": resolved_frame_skip,
             "polygons": polygons,
+            "model_name": resolved_model_name,
+            "preprocess_mode": preprocess_mode,
+            "quality_assessment": quality_assessment,
+            "preset": preset,
         },
         daemon=True,
         name=f"vision-job-{job_id[:8]}",
@@ -504,5 +903,5 @@ async def process_source_video(
     return {
         "job_id": job_id,
         "status": "queued",
-        "message": "Crowd detection started",
+        "message": quality_assessment["message"],
     }

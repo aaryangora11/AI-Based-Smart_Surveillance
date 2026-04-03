@@ -1,3 +1,4 @@
+.env
 .venv/
 venv/
 node_modules/
@@ -12,8 +13,11 @@ __pycache__/
 ai/models/
 ai/artifacts/
 media/processed_videos/
+media/processed_previews/
+media/live_previews/
 media/alert_snapshots/
 media/source_videos/
+media/test_videos/
 backend-*.log
 backend_*.log
 frontend-*.log

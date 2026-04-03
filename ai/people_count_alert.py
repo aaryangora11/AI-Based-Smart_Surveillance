@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 MODEL_PATH = BASE_DIR / "models" / "yolov8n.pt"
+MODEL_DIR = MODEL_PATH.parent
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 MEDIA_ROOT = PROJECT_ROOT / "media"
 SNAPSHOT_DIR = MEDIA_ROOT / "alert_snapshots"
@@ -31,6 +32,7 @@ DEFAULT_CONFIDENCE = 0.35
 DEFAULT_CAMERA_ID = "7"
 DEFAULT_CSV_FLUSH_BATCH = 5
 DEFAULT_FRAME_SKIP = 3
+STATUS_CONFIRM_FRAMES = 2
 
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,6 +110,11 @@ def ist_now_str():
 
 def point_in_poly(point, polygon):
     return cv2.pointPolygonTest(np.array(polygon, np.int32), (float(point[0]), float(point[1])), False) >= 0
+
+
+def detection_anchor(x1, y1, x2, y2):
+    # Foot-point anchors are more reliable for zone occupancy than box centers.
+    return int((x1 + x2) / 2), int(y2 - max(2, (y2 - y1) * 0.08))
 
 
 def create_full_frame_polygon(frame_width, frame_height):
@@ -196,6 +203,47 @@ def create_video_writer(output_video: Path, fps: float, frame_width: int, frame_
     raise RuntimeError(f"Unable to create output video at {output_video}")
 
 
+def resolve_model_path(model_name: str | None):
+    if not model_name:
+        return MODEL_PATH
+
+    candidate = MODEL_DIR / model_name
+    if candidate.exists():
+        return candidate
+
+    explicit = Path(model_name)
+    if explicit.exists():
+        return explicit
+
+    return MODEL_PATH
+
+
+def preprocess_frame(frame, preprocess_mode="off", quality_profile=None):
+    if preprocess_mode == "off":
+        return frame
+
+    quality_profile = quality_profile or {}
+    issues = set(quality_profile.get("issues", []))
+    auto_mode = preprocess_mode == "auto"
+    apply_low_light = preprocess_mode == "mild" or (auto_mode and {"low_light", "dim"} & issues)
+    apply_sharpen = preprocess_mode == "mild" or (auto_mode and {"blurry", "low_resolution"} & issues)
+
+    processed = frame.copy()
+
+    if apply_low_light:
+        lab = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_channel = clahe.apply(l_channel)
+        processed = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+
+    if apply_sharpen:
+        blurred = cv2.GaussianBlur(processed, (0, 0), 2.2)
+        processed = cv2.addWeighted(processed, 1.22, blurred, -0.22, 0)
+
+    return processed
+
+
 def draw_overlays(frame, polygons, area_limits, last_status, counts):
     for area_index, polygon in enumerate(polygons):
         points = np.array(polygon, np.int32).reshape((-1, 1, 2))
@@ -242,15 +290,19 @@ def process_video(
     save_snapshots=True,
     frame_callback=None,
     status_callback=None,
+    model_name=None,
+    preprocess_mode="off",
+    quality_profile=None,
 ):
     source_path = str(source)
     output_video = Path(output_video_path)
     output_video.parent.mkdir(parents=True, exist_ok=True)
 
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"YOLO model not found at {MODEL_PATH}")
+    resolved_model_path = resolve_model_path(model_name)
+    if not resolved_model_path.exists():
+        raise FileNotFoundError(f"YOLO model not found at {resolved_model_path}")
 
-    model = YOLO(str(MODEL_PATH))
+    model = YOLO(str(resolved_model_path))
     capture = cv2.VideoCapture(source_path)
     if not capture.isOpened():
       raise RuntimeError("Unable to open video source.")
@@ -263,6 +315,9 @@ def process_video(
     active_polygons = ensure_polygons(polygons, frame_width, frame_height)
     area_limits = [crowd_limit for _ in active_polygons]
     last_status = {area_index: "green" for area_index in range(len(active_polygons))}
+    pending_status = {area_index: None for area_index in range(len(active_polygons))}
+    pending_hits = {area_index: 0 for area_index in range(len(active_polygons))}
+    last_counts = [0 for _ in active_polygons]
 
     csv_log_path = LOG_DIR / f"camera_{camera_id}_alerts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     snapshots: list[str] = []
@@ -282,13 +337,14 @@ def process_video(
         for result in stream:
             total_frames += 1
             frame = result.orig_img.copy()
+            display_frame = preprocess_frame(frame, preprocess_mode=preprocess_mode, quality_profile=quality_profile)
 
             if total_frames % frame_skip != 0:
-                draw_overlays(frame, active_polygons, area_limits, last_status, [0 for _ in active_polygons])
-                writer.write(frame)
+                draw_overlays(display_frame, active_polygons, area_limits, last_status, last_counts)
+                writer.write(display_frame)
                 if frame_callback:
                     frame_callback(
-                        frame.copy(),
+                        display_frame.copy(),
                         {
                             "total_frames": total_frames,
                             "processed_frames": processed_frames,
@@ -296,7 +352,7 @@ def process_video(
                         },
                     )
                 if show_preview:
-                    cv2.imshow("Crowd Detection", frame)
+                    cv2.imshow("Crowd Detection", display_frame)
                 if show_preview and cv2.waitKey(1) & 0xFF == ord("q"):
                     break
                 continue
@@ -309,10 +365,10 @@ def process_video(
             if boxes is not None and len(boxes) > 0:
                 xyxy = boxes.xyxy.cpu().numpy().astype(int)
                 for (x1, y1, x2, y2) in xyxy:
-                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-                    centers.append((center_x, center_y))
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                    cv2.circle(frame, (center_x, center_y), 4, (255, 255, 255), -1)
+                    anchor_x, anchor_y = detection_anchor(x1, y1, x2, y2)
+                    centers.append((anchor_x, anchor_y))
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                    cv2.circle(display_frame, (anchor_x, anchor_y), 4, (255, 255, 255), -1)
 
             counts = []
             for area_index, polygon in enumerate(active_polygons):
@@ -321,51 +377,67 @@ def process_video(
                 limit = area_limits[area_index]
                 status = "green" if count < limit else "orange" if count == limit else "red"
                 counts.append(count)
-                previous_status = last_status.get(area_index)
+                last_counts[area_index] = count
+                stable_status = last_status.get(area_index)
 
-                if previous_status != status:
-                    last_status[area_index] = status
-                    snapshot = ""
-                    status_text = "Normal" if status == "green" else "Limit Reached" if status == "orange" else "Overcrowded"
+                if stable_status == status:
+                    pending_status[area_index] = None
+                    pending_hits[area_index] = 0
+                    continue
 
-                    print(
-                        f"\n[EVENT] {timestamp} | Camera {camera_id} | "
-                        f"Area A{area_index} -> {status_text} ({count}/{limit})"
+                if pending_status[area_index] == status:
+                    pending_hits[area_index] += 1
+                else:
+                    pending_status[area_index] = status
+                    pending_hits[area_index] = 1
+
+                if pending_hits[area_index] < STATUS_CONFIRM_FRAMES:
+                    continue
+
+                last_status[area_index] = status
+                pending_status[area_index] = None
+                pending_hits[area_index] = 0
+                snapshot = ""
+                status_text = "Normal" if status == "green" else "Limit Reached" if status == "orange" else "Overcrowded"
+
+                print(
+                    f"\n[EVENT] {timestamp} | Camera {camera_id} | "
+                    f"Area A{area_index} -> {status_text} ({count}/{limit})"
+                )
+
+                if status == "orange":
+                    notify("Limit Reached", f"Camera {camera_id} - Area A{area_index}: {count}/{limit}", "orange")
+                    if publish_events:
+                        publish_crowd_event(camera_id, area_index, count, limit, "Limit Reached")
+                elif status == "red":
+                    notify("Overcrowded", f"Camera {camera_id} - Area A{area_index}: {count}/{limit}", "red", beep=True)
+                    if save_snapshots:
+                        snapshot = save_snapshot(display_frame, active_polygons, camera_id, area_index, count, limit)
+                        snapshots.append(snapshot)
+                    if publish_events:
+                        publish_crowd_event(camera_id, area_index, count, limit, "Overcrowded", snapshot)
+
+                if status_callback:
+                    status_callback(
+                        {
+                            "timestamp": timestamp,
+                            "camera_id": camera_id,
+                            "area_index": area_index,
+                            "count": count,
+                            "limit": limit,
+                            "status": status,
+                            "status_text": status_text,
+                            "snapshot_path": snapshot or None,
+                        }
                     )
 
-                    if status == "orange":
-                        notify("Limit Reached", f"Camera {camera_id} - Area A{area_index}: {count}/{limit}", "orange")
-                        if publish_events:
-                            publish_crowd_event(camera_id, area_index, count, limit, "Limit Reached")
-                    elif status == "red":
-                        notify("Overcrowded", f"Camera {camera_id} - Area A{area_index}: {count}/{limit}", "red", beep=True)
-                        if save_snapshots:
-                            snapshot = save_snapshot(frame, active_polygons, camera_id, area_index, count, limit)
-                            snapshots.append(snapshot)
-                        if publish_events:
-                            publish_crowd_event(camera_id, area_index, count, limit, "Overcrowded", snapshot)
+                csv_buffer.append([timestamp, camera_id, area_index, count, status_text, limit])
 
-                    if status_callback:
-                        status_callback(
-                            {
-                                "timestamp": timestamp,
-                                "camera_id": camera_id,
-                                "area_index": area_index,
-                                "count": count,
-                                "limit": limit,
-                                "status": status,
-                                "status_text": status_text,
-                                "snapshot_path": snapshot or None,
-                            }
-                        )
-
-                    csv_buffer.append([timestamp, camera_id, area_index, count, status_text, limit])
-
-            draw_overlays(frame, active_polygons, area_limits, last_status, counts)
-            writer.write(frame)
+            draw_overlays(display_frame, active_polygons, area_limits, last_status, counts)
+            writer.write(display_frame)
             if frame_callback:
                 frame_callback(
-                    frame.copy(),
+                    display_frame.copy(),
                     {
                         "total_frames": total_frames,
                         "processed_frames": processed_frames,
@@ -379,7 +451,7 @@ def process_video(
                 csv_buffer.clear()
 
             if show_preview:
-                cv2.imshow("Crowd Detection", frame)
+                cv2.imshow("Crowd Detection", display_frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
     finally:

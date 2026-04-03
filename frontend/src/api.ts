@@ -43,6 +43,48 @@ export interface ProcessedVideo {
   size_bytes: number;
 }
 
+export interface SnapshotItem {
+  filename: string;
+  url: string;
+  created_at: string;
+  size_bytes: number;
+  camera_name?: string | null;
+  zone_name?: string | null;
+  severity?: string | null;
+  event_type?: string | null;
+  message?: string | null;
+  acknowledged?: boolean;
+}
+
+export interface VisionModelOption {
+  id: string;
+  label: string;
+  size_mb: number;
+  is_default: boolean;
+}
+
+export interface VisionPresetOption {
+  id: string;
+  label: string;
+  description: string;
+  confidence: number;
+  frame_skip: number;
+  preprocess_mode: string;
+}
+
+export interface VisionQualityAssessment {
+  resolution?: { width: number; height: number } | null;
+  fps?: number | null;
+  duration_seconds?: number | null;
+  brightness_score?: number | null;
+  sharpness_score?: number | null;
+  reliability: 'high' | 'medium' | 'low' | 'unknown';
+  reliability_score: number;
+  issues: string[];
+  message: string;
+  recommended_preset: string;
+}
+
 export interface VisionProcessResult {
   message: string;
   video: ProcessedVideo;
@@ -74,6 +116,14 @@ export interface VisionJob {
   csv_log: string | null;
   snapshots: string[];
   polygons_used: number[][][];
+  quality_assessment?: VisionQualityAssessment | null;
+  processing_profile?: {
+    preset: string;
+    confidence: number;
+    frame_skip: number;
+    preprocess_mode: string;
+    model_name: string;
+  } | null;
   progress: {
     total_frames: number;
     processed_frames: number;
@@ -207,15 +257,28 @@ export async function deleteCamera(id: number) {
   return response.data;
 }
 
-export async function getAlerts(limit?: number): Promise<{ alerts: AlertItem[] }> {
+export async function getAlerts(options?: {
+  limit?: number;
+  date?: string;
+  includeAcknowledged?: boolean;
+}): Promise<{ alerts: AlertItem[] }> {
   const response = await api.get('/alerts', {
-    params: limit ? { limit } : undefined,
+    params: {
+      ...(options?.limit ? { limit: options.limit } : {}),
+      ...(options?.date ? { date: options.date } : {}),
+      ...(options?.includeAcknowledged ? { include_acknowledged: true } : {}),
+    },
   });
   return response.data;
 }
 
 export async function acknowledgeAlert(alertId: string) {
   const response = await api.post(`/alerts/${alertId}/acknowledge`);
+  return response.data;
+}
+
+export async function acknowledgeAllAlerts() {
+  const response = await api.post('/alerts/acknowledge-all');
   return response.data;
 }
 
@@ -253,6 +316,22 @@ export async function getLatestProcessedVideo(): Promise<{ video: ProcessedVideo
   return response.data;
 }
 
+export async function getVisionOptions(): Promise<{
+  models: VisionModelOption[];
+  default_model: string;
+  presets: VisionPresetOption[];
+}> {
+  const response = await api.get('/vision/options');
+  return response.data;
+}
+
+export async function getSnapshots(limit = 60): Promise<{ snapshots: SnapshotItem[] }> {
+  const response = await api.get('/vision/snapshots', {
+    params: { limit },
+  });
+  return response.data;
+}
+
 export async function uploadProcessedVideo(file: File): Promise<{ video: ProcessedVideo }> {
   const form = new FormData();
   form.append('file', file);
@@ -268,6 +347,8 @@ export async function startVisionProcessingJob(payload: {
   cameraId: string;
   confidence: number;
   frameSkip: number;
+  preset: string;
+  modelName: string;
   polygons?: number[][][] | null;
 }): Promise<{ job_id: string; status: string; message: string }> {
   const form = new FormData();
@@ -276,6 +357,8 @@ export async function startVisionProcessingJob(payload: {
   form.append('camera_id', payload.cameraId);
   form.append('confidence', String(payload.confidence));
   form.append('frame_skip', String(payload.frameSkip));
+  form.append('preset', payload.preset);
+  form.append('model_name', payload.modelName);
   if (payload.polygons?.length) {
     form.append('polygons_json', JSON.stringify(payload.polygons));
   }

@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 type NavBarProps = {
@@ -7,39 +7,36 @@ type NavBarProps = {
   onToggleTheme: () => void;
 };
 
+const NAV_ITEMS = [
+  { to: '/dashboard', label: 'Dashboard', glyph: 'grid' },
+  { to: '/sites', label: 'Sites', glyph: 'stack' },
+  { to: '/alerts', label: 'Alerts', glyph: 'bell' },
+  { to: '/analytics', label: 'Analytics', glyph: 'bars' },
+  { to: '/vision', label: 'Vision', glyph: 'lens' },
+  { to: '/snapshots', label: 'Snapshots', glyph: 'frame' },
+];
+
 export default function NavBar({ theme, onToggleTheme }: NavBarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const navRef = useRef<HTMLElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [actionsOpen, setActionsOpen] = useState(false);
 
-  const linkClassName = ({ isActive }: { isActive: boolean }) =>
-    `nav-link${isActive ? ' active' : ''}`;
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!navRef.current?.contains(event.target as Node)) {
-        setMenuOpen(false);
-        setActionsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const logout = () => {
-    setMenuOpen(false);
-    setActionsOpen(false);
-    localStorage.removeItem('token');
-    navigate('/login');
-  };
+  const currentPageLabel = useMemo(
+    () => NAV_ITEMS.find((item) => item.to === location.pathname)?.label ?? 'Dashboard',
+    [location.pathname],
+  );
 
   const goToDashboard = () => {
     setMenuOpen(false);
-    setActionsOpen(false);
     navigate('/dashboard');
+  };
+
+  const logout = () => {
+    setMenuOpen(false);
+    localStorage.removeItem('token');
+    localStorage.removeItem('user_full_name');
+    localStorage.removeItem('user_email');
+    navigate('/login');
   };
 
   const onBrandKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -49,95 +46,75 @@ export default function NavBar({ theme, onToggleTheme }: NavBarProps) {
     }
   };
 
-  const closeMenus = () => {
-    setMenuOpen(false);
-    setActionsOpen(false);
-  };
-
-  const pageTitle = location.pathname.slice(1) || 'dashboard';
+  const linkClassName = ({ isActive }: { isActive: boolean }) =>
+    `sidebar-link${isActive ? ' active' : ''}`;
 
   return (
-    <nav className="navbar" ref={navRef}>
-      <div
-        className="nav-brand"
-        onClick={goToDashboard}
-        onKeyDown={onBrandKeyDown}
-        role="button"
-        tabIndex={0}
+    <>
+      <button
+        type="button"
+        className="sidebar-mobile-toggle"
+        onClick={() => setMenuOpen((open) => !open)}
+        aria-expanded={menuOpen}
+        aria-label="Toggle sidebar"
       >
-        <span className="nav-brand-mark">SS</span>
-        <div>
-          <strong>Smart Surveillance</strong>
-          <p>{pageTitle.charAt(0).toUpperCase() + pageTitle.slice(1)} workspace</p>
-        </div>
-      </div>
+        {menuOpen ? 'Close' : 'Menu'}
+      </button>
 
-      <div className="nav-shell">
-        <button
-          type="button"
-          className="nav-menu-toggle"
-          onClick={() => setMenuOpen((open) => !open)}
-          aria-expanded={menuOpen}
-          aria-label="Toggle navigation"
+      {menuOpen ? <button type="button" className="sidebar-backdrop" onClick={() => setMenuOpen(false)} /> : null}
+
+      <aside className={`sidebar-shell${menuOpen ? ' open' : ''}`}>
+        <div
+          className="sidebar-brand"
+          onClick={goToDashboard}
+          onKeyDown={onBrandKeyDown}
+          role="button"
+          tabIndex={0}
         >
-          Navigate
-        </button>
-
-        <div className={`nav-links-shell${menuOpen ? ' open' : ''}`}>
-          <div className="nav-left">
-            <NavLink to="/dashboard" className={linkClassName} onClick={closeMenus}>
-              Dashboard
-            </NavLink>
-            <NavLink to="/sites" className={linkClassName} onClick={closeMenus}>
-              Sites
-            </NavLink>
-            <NavLink to="/alerts" className={linkClassName} onClick={closeMenus}>
-              Alerts
-            </NavLink>
-            <NavLink to="/analytics" className={linkClassName} onClick={closeMenus}>
-              Analytics
-            </NavLink>
-            <NavLink to="/vision" className={linkClassName} onClick={closeMenus}>
-              Vision
-            </NavLink>
+          <span className="sidebar-brand-mark">SS</span>
+          <div>
+            <strong>Smart Surveillance</strong>
+            <p>{currentPageLabel} workspace</p>
           </div>
         </div>
 
-        <div className="nav-actions">
-          <button
-            type="button"
-            className="nav-actions-toggle"
-            onClick={() => setActionsOpen((open) => !open)}
-            aria-expanded={actionsOpen}
-          >
-            Controls
+        <nav className="sidebar-nav">
+          <span className="sidebar-nav-label">Workspace</span>
+          {NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={linkClassName}
+              onClick={() => setMenuOpen(false)}
+            >
+              <span className={`sidebar-link-icon sidebar-icon-${item.glyph}`} aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="sidebar-controls">
+          <label className="theme-switch sidebar-theme-switch">
+            <span>{theme === 'dark' ? 'Dark mode' : 'Light mode'}</span>
+            <input
+              type="checkbox"
+              checked={theme === 'dark'}
+              onChange={() => onToggleTheme()}
+              aria-label="Toggle dark mode"
+            />
+            <span className="theme-slider" aria-hidden="true" />
+          </label>
+
+          <button type="button" onClick={logout} className="button-logout sidebar-logout">
+            Logout
           </button>
-
-          {actionsOpen ? (
-            <div className="nav-action-panel">
-              <div className="nav-action-panel-header">
-                <span className="eyebrow">Workspace controls</span>
-                <strong>{theme === 'dark' ? 'Dark mode active' : 'Light mode active'}</strong>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onToggleTheme();
-                  setActionsOpen(false);
-                }}
-                className="button-secondary nav-action-button"
-              >
-                {theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-              </button>
-
-              <button type="button" onClick={logout} className="button-logout nav-action-button">
-                Logout
-              </button>
-            </div>
-          ) : null}
         </div>
-      </div>
-    </nav>
+      </aside>
+    </>
   );
 }

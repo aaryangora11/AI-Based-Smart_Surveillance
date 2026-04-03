@@ -1,10 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 from datetime import timedelta
-from app import schemas, models, database, security
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app import database, models, schemas, security
 
 router = APIRouter(tags=["Auth"])
 get_db = database.get_db
+
+
+def serialize_user(user: models.User):
+    return {
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+        "full_name": user.full_name,
+        "role": user.role,
+    }
 
 
 @router.post("/register", status_code=201)
@@ -19,16 +31,20 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
         username=user.username,
         full_name=user.full_name,
         hashed_password=hashed_pw,
-        role=user.role
+        role=user.role,
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return {"message": "User registered successfully", "user_id": new_user.id}
+
+    return {
+        "message": "User registered successfully",
+        "user_id": new_user.id,
+        "user": serialize_user(new_user),
+    }
 
 
-# ✅ JSON-based login
 @router.post("/login")
 def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
@@ -38,7 +54,11 @@ def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         data={"sub": user.email},
-        expires_delta=access_token_expires
+        expires_delta=access_token_expires,
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": serialize_user(user),
+    }

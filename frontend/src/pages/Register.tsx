@@ -15,7 +15,8 @@ export default function RegisterPage({ theme, onToggleTheme }: RegisterPageProps
   const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [role, setRole] = useState('viewer');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -36,11 +37,12 @@ export default function RegisterPage({ theme, onToggleTheme }: RegisterPageProps
         username,
         full_name: fullName,
         password,
-        role,
       });
 
       const authData = await login(email, password);
       localStorage.setItem('token', authData.access_token);
+      localStorage.setItem('user_full_name', authData.user?.full_name || fullName || username || 'Operator');
+      localStorage.setItem('user_email', authData.user?.email || email);
       navigate('/dashboard');
     } catch (error) {
       setError(getErrorMessage(error, 'Registration failed'));
@@ -51,29 +53,58 @@ export default function RegisterPage({ theme, onToggleTheme }: RegisterPageProps
 
   return (
     <div className="auth-shell">
-      <button type="button" className="theme-toggle auth-theme-toggle" onClick={onToggleTheme}>
-        {theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
-      </button>
+      <label className="theme-switch auth-theme-toggle">
+        <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+        <input
+          type="checkbox"
+          checked={theme === 'dark'}
+          onChange={onToggleTheme}
+          aria-label="Toggle dark mode"
+        />
+        <span className="theme-slider" aria-hidden="true" />
+      </label>
 
       <section className="auth-hero auth-hero-register">
-        <span className="eyebrow">New operator setup</span>
-        <h1>Create an account and join the monitoring workspace.</h1>
-        <p>
-          Register with your email, username, full name, and role so new team members
-          can start using the system immediately.
-        </p>
+        <div className="auth-hero-copy">
+          <span className="eyebrow">Quick onboarding</span>
+          <h1>Create your account and step directly into the monitoring workspace.</h1>
+          <p>Simple registration, immediate access, and no unnecessary setup steps.</p>
+        </div>
+
+        <div className="auth-preview-panel auth-preview-panel-register">
+          <div className="auth-preview-strip" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </div>
+          <div className="auth-preview-card auth-preview-card-primary">
+            <span>Fast start</span>
+            <strong>Register once and continue straight into operations</strong>
+          </div>
+          <div className="auth-preview-grid">
+            <div className="auth-preview-card">
+              <span>Access</span>
+              <strong>Default role applied automatically</strong>
+            </div>
+            <div className="auth-preview-card">
+              <span>Flow</span>
+              <strong>Account creation and sign-in in one step</strong>
+            </div>
+          </div>
+        </div>
+
         <div className="auth-metrics">
           <div>
-            <strong>Email</strong>
-            <span>Identity and login</span>
+            <strong>Fast</strong>
+            <span>Clean self-registration</span>
           </div>
           <div>
-            <strong>Profile</strong>
-            <span>Username and full name</span>
+            <strong>Secure</strong>
+            <span>Email and password based access</span>
           </div>
           <div>
-            <strong>Role</strong>
-            <span>Viewer, operator, or admin</span>
+            <strong>Ready</strong>
+            <span>Automatic default access</span>
           </div>
         </div>
       </section>
@@ -83,7 +114,7 @@ export default function RegisterPage({ theme, onToggleTheme }: RegisterPageProps
           <div>
             <span className="eyebrow">Registration</span>
             <h2>Create account</h2>
-            <p>Fill in the account details shown in your API schema and we will log you in.</p>
+            <p>Enter your details and we will sign you in right away.</p>
           </div>
         </div>
 
@@ -104,27 +135,47 @@ export default function RegisterPage({ theme, onToggleTheme }: RegisterPageProps
           </label>
 
           <label>
-            Role
-            <select value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="viewer">Viewer</option>
-              <option value="operator">Operator</option>
-              <option value="admin">Admin</option>
-            </select>
-          </label>
-
-          <label>
             Password
-            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" required />
+            <div className="password-field">
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type={showPassword ? 'text' : 'password'}
+                required
+              />
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={() => setShowPassword((current) => !current)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
+              >
+                <span className={`eye-icon${showPassword ? ' eye-icon-off' : ''}`} aria-hidden="true" />
+                <span className="sr-only">{showPassword ? 'Hide password' : 'Show password'}</span>
+              </button>
+            </div>
           </label>
 
           <label>
             Confirm password
-            <input
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              type="password"
-              required
-            />
+            <div className="password-field">
+              <input
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                type={showConfirmPassword ? 'text' : 'password'}
+                required
+              />
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={() => setShowConfirmPassword((current) => !current)}
+                aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showConfirmPassword}
+              >
+                <span className={`eye-icon${showConfirmPassword ? ' eye-icon-off' : ''}`} aria-hidden="true" />
+                <span className="sr-only">{showConfirmPassword ? 'Hide password' : 'Show password'}</span>
+              </button>
+            </div>
           </label>
 
           <button type="submit" disabled={loading}>
