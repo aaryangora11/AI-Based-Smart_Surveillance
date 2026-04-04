@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: smart-surveillance-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-smartuser}
+      POSTGRES_PASSWORD: ${DB_PASS:-changeme}
+      POSTGRES_DB: ${DB_NAME:-smartdb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-smartuser} -d ${DB_NAME:-smartdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: smart-surveillance-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DB_HOST: postgres
+      DATABASE_URL: postgresql://${DB_USER:-smartuser}:${DB_PASS:-changeme}@postgres:5432/${DB_NAME:-smartdb}
+      ENABLE_KAFKA_CONSUMER: ${ENABLE_KAFKA_CONSUMER:-false}
+      ENABLE_KAFKA_EVENTS: ${ENABLE_KAFKA_EVENTS:-false}
+    volumes:
+      - media_data:/app/media
+      - ai_models:/app/ai/models
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: /api
+    container_name: smart-surveillance-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  media_data:
+  ai_models:

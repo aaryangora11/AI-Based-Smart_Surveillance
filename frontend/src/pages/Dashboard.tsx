@@ -13,6 +13,8 @@ import {
 
 import type { AlertItem, AnalyticsDatum, DashboardSummary, ProcessedVideo } from '../api';
 import {
+  API_BASE,
+  buildWsUrl,
   getAnalyticsByEventType,
   getAnalyticsBySeverity,
   getAnalyticsSummary,
@@ -20,8 +22,7 @@ import {
   getLatestProcessedVideo,
 } from '../api';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-const ALERTS_WS_URL = `${API_BASE.replace(/^http/, 'ws')}/alerts/stream`;
+const ALERTS_WS_URL = buildWsUrl('/alerts/stream');
 const DASHBOARD_POLL_MS = 10000;
 
 type ToastAlert = AlertItem & {

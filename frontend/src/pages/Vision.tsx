@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ProcessedVideo, VisionJob, VisionModelOption, VisionPresetOption } from '../api';
 import {
+  API_BASE,
+  buildWsUrl,
   getErrorMessage,
   getLatestProcessedVideo,
   getVisionJob,
@@ -10,10 +12,9 @@ import {
   startVisionProcessingJob,
 } from '../api';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 const VISION_SESSION_KEY = 'vision-page-state';
 const POLYGON_CLOSE_THRESHOLD = 28;
-const VISION_WS_BASE = `${API_BASE.replace(/^http/, 'ws')}/vision/jobs`;
+const VISION_WS_BASE = buildWsUrl('/vision/jobs');
 const VISION_POLL_MS = 1800;
 
 type Point = {

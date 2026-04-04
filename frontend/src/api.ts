@@ -1,6 +1,20 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+
+export function buildWsUrl(path: string) {
+  if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
+    return `${API_BASE.replace(/^http/, 'ws')}${path}`;
+  }
+
+  if (API_BASE.startsWith('/')) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}${API_BASE}${path}`;
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${API_BASE}${path}`;
+}
 
 export interface Site {
   id: string;

@@ -71,6 +71,10 @@ DATABASE_URL=postgresql://smartuser:changeme@127.0.0.1:5432/smartdb
 
 JWT_SECRET_KEY=change-me-in-production
 ACCESS_TOKEN_EXPIRE_MINUTES=60
+
+KAFKA_BOOTSTRAP=localhost:9092
+ENABLE_KAFKA_CONSUMER=false
+ENABLE_KAFKA_EVENTS=false
 ```
 
 ## Backend Setup
@@ -186,6 +190,7 @@ Kafka is optional in this project.
 
 - If Kafka is not running, the app can still work
 - If Kafka is enabled, the system can publish and consume alert/event messages
+- Local and Docker defaults keep Kafka disabled unless you explicitly set `ENABLE_KAFKA_CONSUMER=true` and/or `ENABLE_KAFKA_EVENTS=true`
 
 ### MinIO
 
@@ -210,6 +215,61 @@ Frontend production build:
 ```powershell
 npm --prefix frontend run build
 ```
+
+## Deployment
+
+This repository is now prepared for single-server Docker deployment.
+
+Deployment files included:
+
+- [docker-compose.yml](./docker-compose.yml)
+- [Dockerfile.backend](./Dockerfile.backend)
+- [frontend/Dockerfile](./frontend/Dockerfile)
+- [frontend/nginx.conf](./frontend/nginx.conf)
+
+This setup gives you:
+
+- one public frontend link
+- backend API behind `/api`
+- media served behind `/media`
+- PostgreSQL in the same deployment stack
+
+### Recommended Deployment Target
+
+Use a Linux VM or VPS such as:
+
+- DigitalOcean Droplet
+- AWS EC2
+- Oracle Cloud VM
+- Azure VM
+
+### Deploy Steps On A VPS
+
+1. Install Docker and Docker Compose.
+2. Clone this repository on the server.
+3. Create a real `.env` from `.env.example`.
+4. Add your YOLO model file into `ai/models/`.
+5. Start the stack:
+
+```bash
+docker compose up -d --build
+```
+
+6. Open the server IP in the browser.
+
+If you connect a domain later, the app can be exposed from one public URL such as:
+
+```text
+https://your-domain.com
+```
+
+### Important Deployment Notes
+
+- The frontend is built to call the backend through `/api`
+- WebSocket alert/live-vision routes are proxied through Nginx
+- PostgreSQL data is persisted through a Docker volume
+- Media is persisted through a Docker volume
+- AI model weights are still expected locally in `ai/models/`
 
 ## Current Status
 

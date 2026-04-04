@@ -10,7 +10,7 @@ from kafka.errors import KafkaError, NoBrokersAvailable
 logger = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
-KAFKA_ENABLED = os.getenv("ENABLE_KAFKA_CONSUMER", "true").strip().lower() in {"1", "true", "yes", "on"}
+KAFKA_ENABLED = os.getenv("ENABLE_KAFKA_CONSUMER", "false").strip().lower() in {"1", "true", "yes", "on"}
 INGEST_URL = os.getenv("KAFKA_INGEST_URL", "http://127.0.0.1:8000/events/ingest")
 TOPICS = ["crowd_events", "intrusion_events"]
 
