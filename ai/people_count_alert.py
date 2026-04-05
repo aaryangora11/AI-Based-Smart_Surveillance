@@ -67,7 +67,7 @@ def create_kafka_producer():
 producer = None
 
 # =====================================================
-# NOTIFICATIONS
+#NOTIFICATIONS
 # =====================================================
 try:
     from winotify import Notification, audio
