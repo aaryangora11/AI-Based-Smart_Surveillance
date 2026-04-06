@@ -40,7 +40,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 # =====================================================
 # KAFKA SETUP
 # =====================================================
-KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
+'''KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 TOPIC_NAME = "crowd_events"
 KAFKA_EVENTS_ENABLED = os.getenv("ENABLE_KAFKA_EVENTS", "true").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -61,7 +61,7 @@ def create_kafka_producer():
         return producer
     except Exception:
         logger.warning("Kafka producer could not connect to %s. Continuing without Kafka events.", KAFKA_BOOTSTRAP)
-        return None
+        return None'''
 
 
 producer = None
