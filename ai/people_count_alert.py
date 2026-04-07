@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # =====================================================
 # CONFIGURATION
 # =====================================================
-BASE_DIR = Path(__file__).resolve().parent
+'''BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 MODEL_PATH = BASE_DIR / "models" / "yolov8n.pt"
 MODEL_DIR = MODEL_PATH.parent
@@ -35,7 +35,7 @@ DEFAULT_FRAME_SKIP = 3
 STATUS_CONFIRM_FRAMES = 2
 
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)'''
 
 # =====================================================
 # KAFKA SETUP
